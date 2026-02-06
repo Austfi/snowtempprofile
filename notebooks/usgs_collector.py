@@ -145,8 +145,22 @@ def fetch_usgs_iv(
     print(f"[USGS] Fetching site {site} from {start_date} to {end_date}...")
     print(f"[USGS] Parameters: {', '.join(param_codes)}")
     
-    response = requests.get(USGS_IV_URL, params=params, timeout=timeout)
-    response.raise_for_status()
+    # Retry logic with exponential backoff
+    import time
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(USGS_IV_URL, params=params, timeout=timeout)
+            response.raise_for_status()
+            break  # Success, exit retry loop
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1, 2, 4 seconds
+                print(f"[USGS] Connection error, retrying in {wait_time}s... ({attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                print(f"[USGS] Failed after {max_retries} attempts")
+                raise
     
     # Parse the RDB format response
     df = _parse_rdb_response(response.text)
