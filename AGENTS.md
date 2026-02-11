@@ -106,7 +106,7 @@ These are the parameter codes confirmed available at Senator Beck and Ptarmigan:
 | `00025` | `pressure_mmhg` | Barometric pressure | mmHg |
 | `61728` | `wind_gust_mph` | Wind gust speed | mph |
 
-#### Radiation (CRITICAL for energy balance)
+#### Radiation 
 | Code | DataFrame Column | Description | Units |
 |------|------------------|-------------|-------|
 | `72186` | `sw_down_wm2` | Shortwave radiation, downward (incoming) | W/m² |
@@ -333,3 +333,57 @@ A strong ISSW abstract usually reads like:
 ### USGS Water Services docs
 - Instantaneous Values (iv): https://waterservices.usgs.gov/docs/instantaneous-values/instantaneous-values-details/
 - Migration to modernized APIs: https://api.waterdata.usgs.gov/docs/ogcapi/migration/
+
+## 13) Physics & Math Reference (Undergraduate Level)
+
+This section details the physical equations and numerical methods used in the model, intended for educational reference.
+
+### 13.1 The 1-D Heat Equation
+The core of the model is the **Fourier Heat Equation**, which describes how heat diffuses through the snowpack. We assume a 1-D vertical profile (valid for uniform snow cover, per *Sturm et al., 1995*):
+
+84319 \rho c_p \frac{\partial T}{\partial t} = \frac{\partial}{\partial z} \left( k \frac{\partial T}{\partial z} \right) 84319
+
+Where:
+*   $\rho$: Snow density (/m^3$)
+*   $: Specific heat capacity of ice (/kg \cdot K$)
+*   $: Temperature ($)
+*   $: Time ($)
+*   $: Depth ($)
+*   $: Thermal conductivity (/m \cdot K$) - often parameterized by density.
+
+### 13.2 Surface Energy Balance (SEB)
+The top boundary condition is controlled by the net energy flux at the surface. If the surface temperature  < 0^\circ C$, the net flux changes the temperature. If  = 0^\circ C$ and net flux is positive, it causes melt.
+
+84319 R_{net} + H + LE + G + Q_P = Q_M 84319
+
+Where:
+*   {net}$: Net Radiation ({net} + LW_{net}$)
+*   $: Sensible Heat Flux (turbulent transfer via wind/temp gradient)
+*   $: Latent Heat Flux (evaporation/sublimation)
+*   $: Ground Heat Flux (conduction into snow)
+*   $: Heat from precipitation (neglected here)
+*   $: Energy available for melt
+
+#### Shortwave Radiation (Solar)
+84319 SW_{net} = SW_{\downarrow} (1 - \alpha) 84319
+*   $\alpha$ (Albedo): Reflectivity of snow processes. New snow $\approx 0.85$, old snow $\approx 0.6$. The model currently uses a simplified fixed or decaying albedo ( et al., 2014$).
+
+#### Longwave Radiation (Thermal)
+84319 LW_{net} = \epsilon_{atm} \sigma T_{air}^4 - \epsilon_{snow} \sigma T_{surf}^4 84319
+*   $\epsilon_{atm}$: Atmospheric emissivity. Parameterized using *Brutsaert (1975)* based on vapor pressure and air temperature.
+*   $\epsilon_{snow}$: Snow emissivity ($\approx 0.97 - 0.99$).
+*   $\sigma$: Stefan-Boltzmann constant (.67 \times 10^{-8} W/m^2 K^4$).
+
+#### Turbulent Fluxes (H & LE)
+We use the **Bulk Aerodynamic Method**, suitable for simplified models with limited data (*Arck & Scherer, 2002*):
+84319 H = \rho_{air} c_{p,air} C_H U (T_{air} - T_{surf}) 84319
+84319 LE = \rho_{air} L_{v} C_E U (q_{air} - q_{surf}) 84319
+*   , C_E$: Bulk transfer coefficients (dimensionless, approx /bin/zsh.002$).
+*   $: Wind speed (/s$).
+*   $: Specific humidity (/kg$).
+
+### 13.3 Numerical Method
+The model uses the **Method of Lines (MOL)**.
+1.  **Discretization:** The spatial domain (snow depth) is sliced into $ layers (Finite Difference Method).
+2.  **ODE System:** The PDE becomes a system of $ Ordinary Differential Equations (ODEs), one for each layer's temperature.
+3.  **Time Stepping:** We use  to solve this system over time, which handles stability and adaptive time-stepping better than a simple Euler method.
