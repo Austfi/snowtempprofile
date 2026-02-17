@@ -28,8 +28,9 @@ USGS_IV_URL = "https://nwis.waterservices.usgs.gov/nwis/iv/"
 
 # Target stations for snowpack analysis
 STATIONS = {
-    "senator_beck": "375429107433201",   # Senator Beck Basin Study Area
-    "ptarmigan": "392954106162501",       # Ptarmigan Site
+    "independence_pass": "390622106343001",
+    "berthoud_pass": "394759105464101",
+    "senator_beck": "375429107433201"
 }
 
 # =============================================================================
