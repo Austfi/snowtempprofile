@@ -19,6 +19,8 @@ import requests
 from io import StringIO
 from datetime import datetime
 from typing import Optional, List, Dict, Union
+from pathlib import Path
+import hashlib
 
 # =============================================================================
 # CONFIGURATION
@@ -84,6 +86,9 @@ MODEL_PARAMS = [
 
 # Minimal set for quick testing
 DEFAULT_PARAMS = MODEL_PARAMS
+
+# Local cache location (repo-root/data/usgs_cache)
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "usgs_cache"
 
 # =============================================================================
 # CORE FUNCTIONS
@@ -171,6 +176,100 @@ def fetch_usgs_iv(
         return df
     
     print(f"[USGS] Retrieved {len(df)} records from {df.index.min()} to {df.index.max()}")
+    return df
+
+
+def _build_cache_base_name(
+    site: str,
+    start_date: str,
+    end_date: str,
+    param_codes: Optional[List[str]] = None,
+) -> str:
+    """
+    Build a stable cache filename base for a USGS request.
+    """
+    if param_codes is None:
+        param_codes = DEFAULT_PARAMS
+    code_str = ",".join(param_codes)
+    code_hash = hashlib.md5(code_str.encode("utf-8")).hexdigest()[:10]
+    return f"{site}_{start_date}_{end_date}_{code_hash}"
+
+
+def fetch_usgs_iv_cached(
+    site: str,
+    start_date: str,
+    end_date: str,
+    param_codes: Optional[List[str]] = None,
+    timeout: int = 60,
+    cache_dir: Optional[Union[str, Path]] = None,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    Fetch USGS data with local disk caching.
+
+    Behavior
+    --------
+    - If cache exists and refresh=False, load from local cache.
+    - Otherwise fetch from API and save to cache.
+    - Cache format preference: parquet, fallback to csv.
+
+    Returns
+    -------
+    pd.DataFrame
+        Raw USGS-style dataframe (same format as fetch_usgs_iv output).
+    """
+    if param_codes is None:
+        param_codes = DEFAULT_PARAMS
+    if cache_dir is None:
+        cache_dir = DEFAULT_CACHE_DIR
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    base = _build_cache_base_name(site, start_date, end_date, param_codes)
+    p_parquet = cache_dir / f"{base}.parquet"
+    p_csv = cache_dir / f"{base}.csv"
+
+    # Load existing cache (prefer parquet)
+    if not refresh:
+        if p_parquet.exists():
+            print(f"[USGS][cache] Loading parquet: {p_parquet}")
+            df = pd.read_parquet(p_parquet)
+            if "datetime" in df.columns:
+                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+                df = df.dropna(subset=["datetime"]).set_index("datetime").sort_index()
+            elif not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index, errors="coerce")
+                df = df[~df.index.isna()].sort_index()
+            return df
+        if p_csv.exists():
+            print(f"[USGS][cache] Loading csv: {p_csv}")
+            df = pd.read_csv(p_csv, index_col=0)
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df[~df.index.isna()].sort_index()
+            return df
+
+    # Fetch from API
+    df = fetch_usgs_iv(
+        site=site,
+        start_date=start_date,
+        end_date=end_date,
+        param_codes=param_codes,
+        timeout=timeout,
+    )
+
+    # Save cache (best-effort)
+    try:
+        df_to_save = df.copy()
+        # Keep datetime explicit for robust parquet round-trip
+        if isinstance(df_to_save.index, pd.DatetimeIndex):
+            df_to_save = df_to_save.reset_index().rename(columns={"index": "datetime"})
+        df_to_save.to_parquet(p_parquet, index=False)
+        print(f"[USGS][cache] Saved parquet: {p_parquet}")
+    except Exception as e:
+        print(f"[USGS][cache] Parquet save failed ({e}); saving CSV instead.")
+        df.to_csv(p_csv)
+        print(f"[USGS][cache] Saved csv: {p_csv}")
+
     return df
 
 
