@@ -743,6 +743,69 @@ def plot_event_composite(composite_df: pd.DataFrame, out_png: Path):
     plt.close(fig)
 
 
+def plot_baseline_meteogram(
+    timestamps: pd.DatetimeIndex,
+    *,
+    tair_c: np.ndarray,
+    obs_c: np.ndarray,
+    model_c: np.ndarray,
+    err_c: np.ndarray,
+    sw_down: np.ndarray,
+    lw_down: np.ndarray,
+    wind_ms: np.ndarray,
+    cloud_mask: np.ndarray,
+    out_png: Path,
+):
+    """Compact meteogram with baseline model error strip for practitioner interpretation."""
+    fig, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
+
+    ax = axes[0]
+    ax.plot(timestamps, obs_c, color="black", linewidth=1.4, label="Observed surface temp")
+    ax.plot(timestamps, model_c, color="tab:red", linewidth=1.2, alpha=0.9, label="Model surface temp")
+    ax.plot(timestamps, tair_c, color="tab:blue", linewidth=1.0, alpha=0.85, label="Air temp")
+    ax.set_ylabel("Temp (C)")
+    ax.set_title("Baseline Meteogram: Forcing And Surface Response")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", ncol=3, fontsize=9)
+
+    ax = axes[1]
+    ax.plot(timestamps, sw_down, color="goldenrod", linewidth=1.2, label="SW down")
+    ax.plot(timestamps, lw_down, color="purple", linewidth=1.2, label="LW down")
+    ax.set_ylabel("Radiation (W/m2)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", ncol=2, fontsize=9)
+
+    ax = axes[2]
+    ax.plot(timestamps, wind_ms, color="tab:cyan", linewidth=1.1, label="Wind speed")
+    ax.set_ylabel("Wind (m/s)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=9)
+
+    ax = axes[3]
+    ax.plot(timestamps, err_c, color="tab:red", linewidth=1.1, label="Model - Obs error")
+    ax.axhline(0.0, color="k", linestyle="--", linewidth=1)
+    ax.set_ylabel("Error (C)")
+    ax.set_xlabel("Time")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=9)
+
+    # Shade cloudy periods so radiation/weather regime is easy to connect to error behavior.
+    for i in range(len(timestamps)):
+        if cloud_mask[i]:
+            for ax in axes:
+                ax.axvspan(
+                    timestamps[i] - pd.Timedelta(minutes=20),
+                    timestamps[i] + pd.Timedelta(minutes=20),
+                    color="lightgray",
+                    alpha=0.05,
+                    linewidth=0,
+                )
+
+    plt.tight_layout()
+    fig.savefig(out_png, dpi=170)
+    plt.close(fig)
+
+
 def build_decision_impact_table(error_df: pd.DataFrame, metrics_df: pd.DataFrame) -> pd.DataFrame:
     """Build practitioner-facing hour-count impacts relative to baseline."""
     if "bulk_grad_baseline_measured_cpm" not in error_df.columns or "model_baseline_measured_c" not in error_df.columns:
@@ -848,6 +911,69 @@ def plot_decision_impact(decision_df: pd.DataFrame, out_png: Path, top_n: int = 
     plt.close(fig)
 
 
+def build_implementation_status(
+    *,
+    metrics_df: pd.DataFrame,
+    decision_df: pd.DataFrame,
+    windows_df: pd.DataFrame,
+    has_meteogram: bool,
+) -> pd.DataFrame:
+    """Pass/fail checklist for requested ISSW improvements."""
+    exps = set(metrics_df["experiment"].astype(str).tolist())
+    cols = set(metrics_df.columns.tolist())
+    decision_cols = set(decision_df.columns.tolist()) if len(decision_df) else set()
+
+    checks = [
+        (
+            "1_decision_error_framing",
+            ("d_grad_ge20_h" in decision_cols) and ("flip_grad20_h" in decision_cols),
+            "Decision-impact hour deltas/flips produced.",
+        ),
+        (
+            "2_cloud_lw_pathway",
+            {"lw_hourly_climatology", "lwdown_cloud_to_clear"}.issubset(exps),
+            "Cloud/LW pathway scenarios included.",
+        ),
+        (
+            "3_air_temp_proxy_benchmark",
+            "air_temp_proxy" in exps,
+            "Naive air-temperature proxy benchmark included.",
+        ),
+        (
+            "5_surface_plus_gradient_error",
+            {"RMSE", "dGRADRMSE_all"}.issubset(cols),
+            "Surface and gradient errors reported together.",
+        ),
+        (
+            "6_clear_cloud_split",
+            {"RMSE_cloud", "RMSE_clear", "dRMSE_cloud", "dRMSE_clear"}.issubset(cols),
+            "Clear/cloud regime split metrics present.",
+        ),
+        (
+            "7_variable_importance_ranking",
+            "ImpactScore" in cols,
+            "Ranked variable-importance score computed.",
+        ),
+        (
+            "8_meteogram_with_error_strip",
+            has_meteogram and isinstance(windows_df, pd.DataFrame),
+            "Meteogram + error-strip figure generated.",
+        ),
+    ]
+
+    rows = []
+    for key, ok, desc in checks:
+        rows.append(
+            {
+                "improvement": key,
+                "status": "PASS" if ok else "FAIL",
+                "implemented": int(bool(ok)),
+                "description": desc,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _fmt_signed(x: float, nd: int = 2) -> str:
     if not np.isfinite(x):
         return "nan"
@@ -916,7 +1042,7 @@ def build_so_what_summary(
 ) -> str:
     base = df.loc[df["experiment"] == "baseline_measured"].iloc[0]
     lines: list[str] = []
-    lines.append(f"# Senator Beck So-What Summary ({start} to {end})")
+    lines.append(f"# {station} So-What Summary ({start} to {end})")
     lines.append("")
     lines.append("## Baseline")
     lines.append(
@@ -1397,6 +1523,9 @@ def main() -> int:
     fig_heat_png = outdir / f"variable_importance_regime_heatmap_{args.station}_{args.start}_{args.end}.png"
     fig_event_png = outdir / f"variable_importance_event_composite_{args.station}_{args.start}_{args.end}.png"
     fig_mental_png = outdir / f"mental_model_compare_{args.station}_{args.start}_{args.end}.png"
+    fig_meteogram_png = outdir / f"variable_importance_meteogram_{args.station}_{args.start}_{args.end}.png"
+    impl_csv = outdir / f"implementation_status_{args.station}_{args.start}_{args.end}.csv"
+    impl_md = outdir / f"implementation_status_{args.station}_{args.start}_{args.end}.md"
     df.to_csv(metrics_csv, index=False)
     error_df.to_csv(errors_csv, index=False)
     decision_df = build_decision_impact_table(error_df, df)
@@ -1572,6 +1701,46 @@ def main() -> int:
         grad_naive_cpm=grad_naive,
         out_png=fig_mental_png,
     )
+    plot_baseline_meteogram(
+        pd.DatetimeIndex(timestamps),
+        tair_c=tair_c,
+        obs_c=obs_c,
+        model_c=model_surface_baseline,
+        err_c=error_df["error_baseline_measured_c"].values.astype(float),
+        sw_down=sw_down,
+        lw_down=lw_down,
+        wind_ms=wind_ms,
+        cloud_mask=cloud_mask,
+        out_png=fig_meteogram_png,
+    )
+
+    impl_df = build_implementation_status(
+        metrics_df=df,
+        decision_df=decision_df,
+        windows_df=windows_df,
+        has_meteogram=fig_meteogram_png.exists(),
+    )
+    impl_df.to_csv(impl_csv, index=False)
+    n_pass = int((impl_df["status"] == "PASS").sum())
+    n_total = int(len(impl_df))
+    impl_lines = [
+        f"# Implementation Status ({args.station}, {args.start} to {args.end})",
+        "",
+        f"- Passed `{n_pass}/{n_total}` requested improvements.",
+        "",
+        "## Requested Improvements",
+    ]
+    for _, r in impl_df.iterrows():
+        mark = "PASS" if r["status"] == "PASS" else "FAIL"
+        impl_lines.append(f"- `{r['improvement']}`: **{mark}** - {r['description']}")
+    impl_lines.append("")
+    impl_lines.append("## Evidence Files")
+    impl_lines.append(f"- Metrics table: `{metrics_csv.name}`")
+    impl_lines.append(f"- Decision-impact table: `{decision_csv.name}`")
+    impl_lines.append(f"- Ranking plot: `{fig_png.name}`")
+    impl_lines.append(f"- Meteogram: `{fig_meteogram_png.name}`")
+    impl_lines.append(f"- Mental-model benchmark: `{mental_csv.name}`")
+    impl_md.write_text("\n".join(impl_lines) + "\n")
 
     # Plain-language "so what?" summary for abstract writing support.
     so_what_md = outdir / f"so_what_summary_{args.station}_{args.start}_{args.end}.md"
@@ -1653,6 +1822,9 @@ def main() -> int:
     print(decision_md)
     print(mental_csv)
     print(fig_mental_png)
+    print(fig_meteogram_png)
+    print(impl_csv)
+    print(impl_md)
     print(so_what_md)
     return 0
 

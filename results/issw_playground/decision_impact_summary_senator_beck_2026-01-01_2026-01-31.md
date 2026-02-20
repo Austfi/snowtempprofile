@@ -10,5 +10,6 @@
 - `air_temp_proxy`: d|grad|>=20h `-233`, dT<=-15h `-249`, grad20 flips `233`h, cold15 flips `251`h.
 
 ## Presentation Use
-- Start with `decision_impact_plot_*.png` for practical consequences.
-- Then show `variable_importance_plot_*.png` for technical validation.
+- Use `decision_impact_plot_*.png` first to show practical consequences in hours.
+- Use `variable_importance_plot_*.png` second for technical cross-check.
+- Use `mental_model_compare_*.png` last to bridge to practitioner education.

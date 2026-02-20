@@ -1,4 +1,4 @@
-# Senator Beck So-What Summary (2026-01-01 to 2026-01-31)
+# senator_beck So-What Summary (2026-01-01 to 2026-01-31)
 
 ## Baseline
 - Baseline surface RMSE is `1.64 C` and baseline P95 bulk gradient is `31.0 C/m` (`3.10 C per 10 cm`).
@@ -20,6 +20,11 @@
 - `sw_hourly_climatology` changes surface RMSE by `+1.59 C` and gradient RMSE by `+2.92 C/m` (`+0.29 C/10 cm`).
 - Cloud-window impact: surface `+1.76 C`, gradient `+2.58 C/m`.
 - So what: removing observed cloud-driven SW variability materially degrades both surface temperature and gradient skill; daytime cloud effects should be represented in operational interpretation.
+
+## Using Climatological LW Instead Of Measured LW
+- `lw_hourly_climatology` changes surface RMSE by `+2.22 C` and gradient RMSE by `+4.90 C/m` (`+0.49 C/10 cm`).
+- Cloud-window impact: surface `+4.64 C`, gradient `+7.82 C/m`.
+- So what: removing event-scale cloud LW variability strongly degrades snow temperature and gradient skill, even when daily weather 'feels' similar.
 
 ## Using Climatological SW Only In Cloudy Daytime
 - `sw_cloud_day_climatology` changes surface RMSE by `+0.42 C` and gradient RMSE by `+1.26 C/m` (`+0.13 C/10 cm`).
@@ -61,23 +66,33 @@
 - Cloud-window impact: surface `+0.01 C`, gradient `+1.36 C/m`.
 - So what: snow depth uncertainty can have modest surface impact but meaningful gradient impact, so depth quality matters for gradient-focused products.
 
+## Flattening Air-Temperature Variability To Monthly Mean (0%)
+- `airtemp_scale_0p0` changes surface RMSE by `+1.64 C` and gradient RMSE by `+3.01 C/m` (`+0.30 C/10 cm`).
+- Cloud-window impact: surface `+2.51 C`, gradient `+3.67 C/m`.
+- So what: air temperature alone cannot reproduce observed snow thermal evolution; removing air variability creates large interpretive errors.
+
+## Removing Wind Influence (0%)
+- `wind_scale_0p0` changes surface RMSE by `+5.74 C` and gradient RMSE by `+8.92 C/m` (`+0.89 C/10 cm`).
+- Cloud-window impact: surface `+1.29 C`, gradient `+2.26 C/m`.
+- So what: wind effects can be large and nonlinear; this extreme test is memorable for training because it shows how quickly flux balance can drift.
+
 ## Top Realistic Uncertainty Drivers
+- `wind_scale_0p0` (turbulent): surface `+5.74 C`, gradient `+8.92 C/m`.
+- `air_temp_proxy` (heuristic): surface `+5.58 C`, gradient `+9.15 C/m`.
+- `wind_scale_0p25` (turbulent): surface `+4.27 C`, gradient `+7.09 C/m`.
+- `lw_hourly_climatology` (longwave): surface `+2.22 C`, gradient `+4.90 C/m`.
+- `wind_scale_0p5` (turbulent): surface `+2.15 C`, gradient `+4.32 C/m`.
+- `airtemp_scale_0p0` (airtemp): surface `+1.64 C`, gradient `+3.01 C/m`.
 - `lwdown_scale_0p9` (longwave): surface `+1.05 C`, gradient `+2.72 C/m`.
 - `sw_hourly_climatology` (shortwave): surface `+1.59 C`, gradient `+2.92 C/m`.
-- `sw_daytime_climatology` (shortwave): surface `+1.58 C`, gradient `+2.92 C/m`.
-- `lwdown_scale_1p1` (longwave): surface `+0.78 C`, gradient `+2.40 C/m`.
-- `sw_cloud_day_climatology` (shortwave): surface `+0.42 C`, gradient `+1.26 C/m`.
-- `lwdown_scale_0p9_clear_night` (longwave): surface `+0.48 C`, gradient `+1.62 C/m`.
-- `lwdown_scale_1p1_cloud_night` (longwave): surface `+0.18 C`, gradient `+0.80 C/m`.
-- `lwdown_scale_1p1_clear_night` (longwave): surface `+0.28 C`, gradient `+1.51 C/m`.
 
 ## Weather Windows That Matter Most
 - Highest-error 6-hour windows are mostly tagged as `{'clear_calm': 2, 'clear': 2, 'sunny_clear': 1}` with typical LWdown `176.1 W/m2`, SWdown `187.6 W/m2`, wind `2.44 m/s`.
 - So what: forecast/measurement uncertainty during these window types will have outsized effects on both snow surface temperature and gradient diagnostics.
 
 ## High-Error vs Low-Error Composite
-- High-error windows: cloud fraction `0.00`, LWdown `174.7 W/m2`, wind `2.76 m/s`.
-- Low-error windows: cloud fraction `0.83`, LWdown `247.9 W/m2`, wind `5.38 m/s`.
+- High-error windows: cloud fraction `0.00`, LWdown `176.1 W/m2`, wind `2.44 m/s`.
+- Low-error windows: cloud fraction `0.90`, LWdown `248.4 W/m2`, wind `6.33 m/s`.
 - So what: this gives a concrete operational context for when radiation and turbulent forcings are most likely to cause model interpretation risk.
 
 ## Practical Takeaway For Snow Safety
