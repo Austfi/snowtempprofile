@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Union
 from pathlib import Path
 import hashlib
+import re
 
 # =============================================================================
 # CONFIGURATION
@@ -195,6 +196,18 @@ def _build_cache_base_name(
     return f"{site}_{start_date}_{end_date}_{code_hash}"
 
 
+def _build_simplified_cache_name(site: str, start_date: str, end_date: str) -> str:
+    """
+    Build simplified-cache filename when station key is known.
+    Example: senator_beck_2026-01-01_2026-01-31_simplified.csv
+    """
+    reverse_lookup = {v: k for k, v in STATIONS.items()}
+    station_key = reverse_lookup.get(site)
+    if station_key is None:
+        station_key = site
+    return f"{station_key}_{start_date}_{end_date}_simplified.csv"
+
+
 def fetch_usgs_iv_cached(
     site: str,
     start_date: str,
@@ -228,22 +241,32 @@ def fetch_usgs_iv_cached(
     base = _build_cache_base_name(site, start_date, end_date, param_codes)
     p_parquet = cache_dir / f"{base}.parquet"
     p_csv = cache_dir / f"{base}.csv"
+    p_simplified_csv = cache_dir / _build_simplified_cache_name(site, start_date, end_date)
 
     # Load existing cache (prefer parquet)
     if not refresh:
         if p_parquet.exists():
-            print(f"[USGS][cache] Loading parquet: {p_parquet}")
-            df = pd.read_parquet(p_parquet)
-            if "datetime" in df.columns:
-                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-                df = df.dropna(subset=["datetime"]).set_index("datetime").sort_index()
-            elif not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, errors="coerce")
-                df = df[~df.index.isna()].sort_index()
-            return df
+            try:
+                print(f"[USGS][cache] Loading parquet: {p_parquet}")
+                df = pd.read_parquet(p_parquet)
+                if "datetime" in df.columns:
+                    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+                    df = df.dropna(subset=["datetime"]).set_index("datetime").sort_index()
+                elif not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index, errors="coerce")
+                    df = df[~df.index.isna()].sort_index()
+                return df
+            except Exception as e:
+                print(f"[USGS][cache] Parquet load failed ({e}); trying CSV cache.")
         if p_csv.exists():
             print(f"[USGS][cache] Loading csv: {p_csv}")
             df = pd.read_csv(p_csv, index_col=0)
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df[~df.index.isna()].sort_index()
+            return df
+        if p_simplified_csv.exists():
+            print(f"[USGS][cache] Loading simplified csv: {p_simplified_csv}")
+            df = pd.read_csv(p_simplified_csv, index_col=0)
             df.index = pd.to_datetime(df.index, errors="coerce")
             df = df[~df.index.isna()].sort_index()
             return df
@@ -269,6 +292,13 @@ def fetch_usgs_iv_cached(
         print(f"[USGS][cache] Parquet save failed ({e}); saving CSV instead.")
         df.to_csv(p_csv)
         print(f"[USGS][cache] Saved csv: {p_csv}")
+
+    # Also save simplified CSV for environments without parquet engines.
+    try:
+        simplify_columns(df).to_csv(p_simplified_csv)
+        print(f"[USGS][cache] Saved simplified csv: {p_simplified_csv}")
+    except Exception as e:
+        print(f"[USGS][cache] Simplified csv save failed ({e}).")
 
     return df
 
@@ -335,6 +365,17 @@ def simplify_columns(df: pd.DataFrame) -> pd.DataFrame:
     Returns a copy of the DataFrame with simplified column names.
     """
     df = df.copy()
+
+    # If dataframe already appears simplified, return as-is (minus metadata cols).
+    # This avoids mangling names like 'air_temp_c' when simplify_columns is called twice.
+    skip_cols = {"agency_cd", "site_no", "tz_cd"}
+    raw_like_pattern = re.compile(r"^\d+_\d{5}(?:_cd)?$")
+    known_simplified_cols = set(PARAM_CODES.keys()) | {"soil_temp_c_2"}
+    cols = [c for c in df.columns if c not in skip_cols]
+    raw_like_count = sum(bool(raw_like_pattern.match(c)) for c in cols)
+    simplified_count = sum(c in known_simplified_cols for c in cols)
+    if simplified_count >= max(3, len(cols) // 3) and raw_like_count == 0:
+        return df.drop(columns=list(skip_cols), errors="ignore")
     
     # Columns to skip
     skip_cols = {"agency_cd", "site_no", "tz_cd"}
