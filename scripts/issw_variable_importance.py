@@ -45,7 +45,8 @@ class Experiment:
     family: str
     use_idealized_sw: bool = False
     use_idealized_lw: bool = False
-    sw_mode: str = "measured"  # measured | hourly_clim | day_clim | cloud_day_clim
+    sw_mode: str = "measured"  # measured | net_hourly_clim | net_day_clim | net_cloud_day_clim | alpha_fixed_no_up
+    sw_alpha: float = 0.80
     turb_mode: str = "normal"  # normal | no_sensible | no_latent | no_turb
     lw_mode: str = "measured"  # measured | hourly_clim | zero | cloud_zero | cloud_to_clear
     qsen_scale: float = 1.0
@@ -129,20 +130,27 @@ def build_experiments() -> list[Experiment]:
         Experiment(
             name="sw_hourly_climatology",
             family="shortwave",
-            sw_mode="hourly_clim",
-            notes="SW down replaced with hourly climatology (no cloud-event variability).",
+            sw_mode="net_hourly_clim",
+            notes="Net SW replaced with hourly climatology (no cloud-event variability).",
         ),
         Experiment(
             name="sw_daytime_climatology",
             family="shortwave",
-            sw_mode="day_clim",
-            notes="SW down replaced by diurnal climatology during daytime only.",
+            sw_mode="net_day_clim",
+            notes="Net SW replaced by diurnal climatology during daytime only.",
         ),
         Experiment(
             name="sw_cloud_day_climatology",
             family="shortwave",
-            sw_mode="cloud_day_clim",
-            notes="SW down replaced by diurnal climatology during cloudy daytime only.",
+            sw_mode="net_cloud_day_clim",
+            notes="Net SW replaced by diurnal climatology during cloudy daytime only.",
+        ),
+        Experiment(
+            name="sw_no_up_alpha_0p80",
+            family="shortwave",
+            sw_mode="alpha_fixed_no_up",
+            sw_alpha=0.80,
+            notes="No SW-up sensor case: SWnet = SWdown * (1 - 0.80).",
         ),
         Experiment(
             name="sensible_scale_0p7",
@@ -345,13 +353,27 @@ def build_experiments() -> list[Experiment]:
     ]
 
 
-def make_hourly_curve(t_eval: np.ndarray, values: np.ndarray) -> np.ndarray:
-    hours = ((t_eval % 86400.0) / 3600.0).astype(int)
+def make_hourly_curve(t_eval: np.ndarray, values: np.ndarray, start_offset_sec: int = 0) -> np.ndarray:
+    hours = hour_index_from_seconds(np.asarray(t_eval, dtype=float), start_offset_sec)
     s = pd.Series(values).groupby(hours).mean()
     s = s.reindex(range(24))
     s = s.interpolate(limit_direction="both")
     s = s.fillna(float(np.nanmean(values)))
     return s.values
+
+
+def hour_index_from_seconds(t_sec, start_offset_sec: int):
+    arr = np.asarray(t_sec, dtype=float)
+    hours = (((arr + float(start_offset_sec)) % 86400.0) / 3600.0).astype(int)
+    return hours
+
+
+def _eval_scalar_func_on_array(func, t_sec):
+    arr = np.asarray(t_sec, dtype=float)
+    if np.isscalar(t_sec):
+        return float(func(float(arr)))
+    out = np.array([float(func(float(v))) for v in arr.ravel()], dtype=float)
+    return out.reshape(arr.shape)
 
 
 def make_hourly_func(hourly_curve: np.ndarray):
@@ -366,27 +388,40 @@ def make_hourly_func(hourly_curve: np.ndarray):
     return _f
 
 
-def make_sw_interp_func(ns: dict, sw_mode: str, sw_hourly_curve: np.ndarray, cloud_interp):
-    base = ns["SW_in_interp"]
+def make_sw_net_func(
+    ns: dict,
+    *,
+    sw_mode: str,
+    sw_net_hourly_curve: np.ndarray,
+    cloud_interp,
+    start_offset_sec: int,
+    night_sw_threshold: float,
+    sw_alpha: float,
+):
+    base_sw_in = ns["SW_in_interp"]
+    base_sw_net = ns["compute_shortwave_net"]
 
     def _f(t_sec):
         arr = np.asarray(t_sec, dtype=float)
-        hours = (arr % 86400.0) / 3600.0
-        hour_i = hours.astype(int)
-        sw_clim = sw_hourly_curve[hour_i]
-        sw_meas = np.asarray(base(arr), dtype=float)
+        hour_i = hour_index_from_seconds(arr, start_offset_sec)
+        sw_net_clim = sw_net_hourly_curve[hour_i]
+        sw_net_meas = _eval_scalar_func_on_array(base_sw_net, arr)
+        sw_in_meas = np.asarray(base_sw_in(arr), dtype=float)
         cloudy = np.asarray(cloud_interp(arr), dtype=float) >= 0.5
-        day = (hours >= 6.0) & (hours <= 18.0)
+        day = sw_in_meas > float(night_sw_threshold)
 
-        if sw_mode == "hourly_clim":
-            out = sw_clim
-        elif sw_mode == "day_clim":
-            out = np.where(day, sw_clim, sw_meas)
-        elif sw_mode == "cloud_day_clim":
-            out = np.where(day & cloudy, sw_clim, sw_meas)
+        if sw_mode == "net_hourly_clim":
+            out = sw_net_clim
+        elif sw_mode == "net_day_clim":
+            out = np.where(day, sw_net_clim, sw_net_meas)
+        elif sw_mode == "net_cloud_day_clim":
+            out = np.where(day & cloudy, sw_net_clim, sw_net_meas)
+        elif sw_mode == "alpha_fixed_no_up":
+            out = np.maximum(sw_in_meas * (1.0 - float(sw_alpha)), 0.0)
         else:
-            out = sw_meas
+            out = sw_net_meas
 
+        out = np.maximum(np.asarray(out, dtype=float), 0.0)
         if np.isscalar(t_sec):
             return float(np.asarray(out))
         return out
@@ -403,13 +438,15 @@ def make_lw_radiative_func(
     lw_hourly_curve: np.ndarray,
     lw_down_scale: float,
     lw_scale_regime: str,
+    start_offset_sec: int,
+    night_sw_threshold: float,
 ):
     def _func(t_sec, t_surf_k):
         if lw_mode == "zero":
             lw_down = 0.0
         else:
             if lw_mode == "hourly_clim":
-                hour_i = int((float(t_sec) % 86400.0) / 3600.0)
+                hour_i = int(hour_index_from_seconds(float(t_sec), start_offset_sec))
                 lw_down = float(lw_hourly_curve[hour_i])
             else:
                 lw_down = float(ns["LW_in_interp"](t_sec))
@@ -417,10 +454,10 @@ def make_lw_radiative_func(
             if lw_mode == "cloud_zero" and cloudy:
                 lw_down = 0.0
             elif lw_mode == "cloud_to_clear" and cloudy:
-                hour_i = int((float(t_sec) % 86400.0) / 3600.0)
+                hour_i = int(hour_index_from_seconds(float(t_sec), start_offset_sec))
                 lw_down = float(lw_clear_hourly[hour_i])
-        hour = (float(t_sec) % 86400.0) / 3600.0
-        day = (hour >= 6.0) and (hour <= 18.0)
+        sw_now = float(ns["SW_in_interp"](t_sec))
+        day = sw_now > float(night_sw_threshold)
         night = not day
         cloudy = float(cloud_interp(t_sec)) >= 0.5
 
@@ -439,7 +476,7 @@ def make_lw_radiative_func(
         lw_down = max(0.0, lw_down)
         lw_up = float(ns["eps_snow"]) * ns["sigma"] * (t_surf_k**4)
         lw_net = lw_down - lw_up
-        sw_net = max(float(ns["SW_in_interp"](t_sec) - ns["SW_out_interp"](t_sec)), 0.0)
+        sw_net = max(float(ns["compute_shortwave_net"](t_sec)), 0.0)
         return lw_net, sw_net
 
     return _func
@@ -495,6 +532,32 @@ def compute_metrics(err: np.ndarray, obs: np.ndarray, model: np.ndarray, mask: n
     return rmse, bias
 
 
+def gradient_top_depth_cpm(
+    t_layers_k: np.ndarray,
+    t_solver: np.ndarray,
+    t_eval: np.ndarray,
+    h_eval: np.ndarray,
+    depth_m: float,
+) -> np.ndarray:
+    """
+    Compute near-surface gradient: (T_surface - T_at_depth) / depth in C/m.
+    """
+    n_layers, _ = t_layers_k.shape
+    depth_m = max(0.01, float(depth_m))
+
+    # Interpolate each layer to evaluation times.
+    layer_eval_c = np.vstack(
+        [np.interp(t_eval, t_solver, t_layers_k[i, :] - 273.15) for i in range(n_layers)]
+    )
+    t_top_c = layer_eval_c[-1, :]
+
+    dz = np.maximum(h_eval / float(n_layers), 0.002)
+    k_down = np.clip(np.round(depth_m / dz).astype(int), 1, n_layers - 1)
+    j_idx = n_layers - 1 - k_down
+    t_depth_c = np.array([layer_eval_c[j_idx[i], i] for i in range(len(t_eval))], dtype=float)
+    return (t_top_c - t_depth_c) / depth_m
+
+
 def run_experiment(
     ns: dict,
     exp: Experiment,
@@ -504,12 +567,15 @@ def run_experiment(
     t_eval: np.ndarray,
     obs_c: np.ndarray,
     window_masks: dict[str, np.ndarray],
-    sw_hourly_curve: np.ndarray,
+    sw_net_hourly_curve: np.ndarray,
     cloud_interp,
     lw_clear_hourly: np.ndarray,
     lw_hourly_curve: np.ndarray,
+    start_offset_sec: int,
+    night_sw_threshold: float,
 ):
     orig_sw_in = ns["SW_in_interp"]
+    orig_sw_net = ns["compute_shortwave_net"]
     orig_turb = ns["turbulent_fluxes"]
     orig_rad = ns["compute_radiative_fluxes"]
     orig_rad_ideal = ns["compute_idealized_radiative_fluxes"]
@@ -518,8 +584,16 @@ def run_experiment(
     orig_snow_h = ns["snow_depth_interp"]
 
     try:
-        if exp.sw_mode in {"hourly_clim", "day_clim", "cloud_day_clim"}:
-            ns["SW_in_interp"] = make_sw_interp_func(ns, exp.sw_mode, sw_hourly_curve, cloud_interp)
+        if exp.sw_mode in {"net_hourly_clim", "net_day_clim", "net_cloud_day_clim", "alpha_fixed_no_up"}:
+            ns["compute_shortwave_net"] = make_sw_net_func(
+                ns,
+                sw_mode=exp.sw_mode,
+                sw_net_hourly_curve=sw_net_hourly_curve,
+                cloud_interp=cloud_interp,
+                start_offset_sec=start_offset_sec,
+                night_sw_threshold=night_sw_threshold,
+                sw_alpha=exp.sw_alpha,
+            )
 
         if exp.turb_mode != "normal":
             ns["turbulent_fluxes"] = make_turbulent_func(ns, exp.turb_mode)
@@ -559,6 +633,8 @@ def run_experiment(
                 lw_hourly_curve=lw_hourly_curve,
                 lw_down_scale=exp.lw_down_scale,
                 lw_scale_regime=exp.lw_scale_regime,
+                start_offset_sec=start_offset_sec,
+                night_sw_threshold=night_sw_threshold,
             )
             ns["compute_radiative_fluxes"] = patched
             ns["compute_idealized_radiative_fluxes"] = patched
@@ -574,6 +650,9 @@ def run_experiment(
         t_bot_c = np.interp(t_eval, t_solver, t_layers[0, :] - 273.15)
         h_eval = np.maximum(np.asarray(ns["snow_depth_interp"](t_eval), dtype=float), 0.10)
         grad_bulk_cpm = (t_top_c - t_bot_c) / h_eval
+        grad_top10_cpm = gradient_top_depth_cpm(t_layers, t_solver, t_eval, h_eval, depth_m=0.10)
+        grad_top20_cpm = gradient_top_depth_cpm(t_layers, t_solver, t_eval, h_eval, depth_m=0.20)
+        grad_top60_cpm = gradient_top_depth_cpm(t_layers, t_solver, t_eval, h_eval, depth_m=0.60)
 
         out = {
             "experiment": exp.name,
@@ -586,15 +665,26 @@ def run_experiment(
             "Mean_abs_bulk_grad_Cpm": float(np.mean(np.abs(grad_bulk_cpm))),
             "P95_abs_bulk_grad_Cpm": float(np.nanpercentile(np.abs(grad_bulk_cpm), 95)),
             "Max_abs_bulk_grad_Cpm": float(np.nanmax(np.abs(grad_bulk_cpm))),
+            "Mean_abs_top10_grad_Cpm": float(np.mean(np.abs(grad_top10_cpm))),
+            "Mean_abs_top20_grad_Cpm": float(np.mean(np.abs(grad_top20_cpm))),
+            "Mean_abs_top60_grad_Cpm": float(np.mean(np.abs(grad_top60_cpm))),
+            "P95_abs_top20_grad_Cpm": float(np.nanpercentile(np.abs(grad_top20_cpm), 95)),
         }
         for wname, m in window_masks.items():
             rmse_w, bias_w = compute_metrics(err, obs_c, model_eval_c, m)
             out[f"RMSE_{wname}"] = rmse_w
             out[f"Bias_{wname}"] = bias_w
 
-        return out, model_eval_c, err, grad_bulk_cpm
+        grad_pack = {
+            "bulk": grad_bulk_cpm,
+            "top10": grad_top10_cpm,
+            "top20": grad_top20_cpm,
+            "top60": grad_top60_cpm,
+        }
+        return out, model_eval_c, err, grad_pack
     finally:
         ns["SW_in_interp"] = orig_sw_in
+        ns["compute_shortwave_net"] = orig_sw_net
         ns["turbulent_fluxes"] = orig_turb
         ns["compute_radiative_fluxes"] = orig_rad
         ns["compute_idealized_radiative_fluxes"] = orig_rad_ideal
@@ -808,26 +898,53 @@ def plot_baseline_meteogram(
 
 def build_decision_impact_table(error_df: pd.DataFrame, metrics_df: pd.DataFrame) -> pd.DataFrame:
     """Build practitioner-facing hour-count impacts relative to baseline."""
-    if "bulk_grad_baseline_measured_cpm" not in error_df.columns or "model_baseline_measured_c" not in error_df.columns:
+    if "model_baseline_measured_c" not in error_df.columns:
         return pd.DataFrame()
 
-    base_grad = np.abs(error_df["bulk_grad_baseline_measured_cpm"].values.astype(float))
+    if "grad_top20_baseline_measured_cpm" in error_df.columns:
+        grad_prefix = "grad_top20"
+        grad_thresholds = (10.0, 20.0)
+    elif "bulk_grad_baseline_measured_cpm" in error_df.columns:
+        grad_prefix = "bulk_grad"
+        grad_thresholds = (20.0, 30.0)
+    else:
+        return pd.DataFrame()
+
+    if "dt_hours" in error_df.columns:
+        dt_hours = error_df["dt_hours"].values.astype(float)
+    else:
+        if "timestamp" in error_df.columns:
+            t = pd.to_datetime(error_df["timestamp"]).astype("int64").values / 1e9
+            dt_sec = np.diff(t)
+        else:
+            dt_sec = np.array([], dtype=float)
+        if len(dt_sec) == 0:
+            dt_sec = np.array([3600.0], dtype=float)
+        dt_sec = np.r_[dt_sec, dt_sec[-1]]
+        dt_hours = dt_sec / 3600.0
+    dt_hours = np.maximum(dt_hours, 0.0)
+
+    def _hours(mask):
+        return float(np.sum(mask.astype(float) * dt_hours))
+
+    g1, g2 = grad_thresholds
+    base_grad = np.abs(error_df[f"{grad_prefix}_baseline_measured_cpm"].values.astype(float))
     base_surf = error_df["model_baseline_measured_c"].values.astype(float)
     experiments = [str(x) for x in metrics_df["experiment"].tolist()]
 
     rows = []
     for exp in experiments:
-        gcol = f"bulk_grad_{exp}_cpm"
+        gcol = f"{grad_prefix}_{exp}_cpm"
         scol = f"model_{exp}_c"
         if gcol not in error_df.columns or scol not in error_df.columns:
             continue
         grad = np.abs(error_df[gcol].values.astype(float))
         surf = error_df[scol].values.astype(float)
 
-        b20 = base_grad >= 20.0
-        s20 = grad >= 20.0
-        b30 = base_grad >= 30.0
-        s30 = grad >= 30.0
+        b20 = base_grad >= g1
+        s20 = grad >= g1
+        b30 = base_grad >= g2
+        s30 = grad >= g2
 
         bc15 = base_surf <= -15.0
         sc15 = surf <= -15.0
@@ -837,23 +954,26 @@ def build_decision_impact_table(error_df: pd.DataFrame, metrics_df: pd.DataFrame
         rows.append(
             {
                 "experiment": exp,
-                "grad_ge10_h": int(np.sum(grad >= 10.0)),
-                "grad_ge20_h": int(np.sum(s20)),
-                "grad_ge30_h": int(np.sum(s30)),
-                "surf_le15_h": int(np.sum(sc15)),
-                "surf_le20_h": int(np.sum(sc20)),
-                "flip_grad20_h": int(np.sum(b20 != s20)),
-                "extra_grad20_h": int(np.sum((~b20) & s20)),
-                "missed_grad20_h": int(np.sum(b20 & (~s20))),
-                "flip_grad30_h": int(np.sum(b30 != s30)),
-                "extra_grad30_h": int(np.sum((~b30) & s30)),
-                "missed_grad30_h": int(np.sum(b30 & (~s30))),
-                "flip_cold15_h": int(np.sum(bc15 != sc15)),
-                "extra_cold15_h": int(np.sum((~bc15) & sc15)),
-                "missed_cold15_h": int(np.sum(bc15 & (~sc15))),
-                "flip_cold20_h": int(np.sum(bc20 != sc20)),
-                "extra_cold20_h": int(np.sum((~bc20) & sc20)),
-                "missed_cold20_h": int(np.sum(bc20 & (~sc20))),
+                "gradient_metric": grad_prefix,
+                "gradient_threshold_1_cpm": float(g1),
+                "gradient_threshold_2_cpm": float(g2),
+                "grad_ge10_h": _hours(grad >= 10.0),
+                "grad_ge20_h": _hours(s20),
+                "grad_ge30_h": _hours(s30),
+                "surf_le15_h": _hours(sc15),
+                "surf_le20_h": _hours(sc20),
+                "flip_grad20_h": _hours(b20 != s20),
+                "extra_grad20_h": _hours((~b20) & s20),
+                "missed_grad20_h": _hours(b20 & (~s20)),
+                "flip_grad30_h": _hours(b30 != s30),
+                "extra_grad30_h": _hours((~b30) & s30),
+                "missed_grad30_h": _hours(b30 & (~s30)),
+                "flip_cold15_h": _hours(bc15 != sc15),
+                "extra_cold15_h": _hours((~bc15) & sc15),
+                "missed_cold15_h": _hours(bc15 & (~sc15)),
+                "flip_cold20_h": _hours(bc20 != sc20),
+                "extra_cold20_h": _hours((~bc20) & sc20),
+                "missed_cold20_h": _hours(bc20 & (~sc20)),
             }
         )
 
@@ -866,7 +986,7 @@ def build_decision_impact_table(error_df: pd.DataFrame, metrics_df: pd.DataFrame
         return out
     b = base.iloc[0]
     for c in ["grad_ge10_h", "grad_ge20_h", "grad_ge30_h", "surf_le15_h", "surf_le20_h"]:
-        out[f"d_{c}"] = out[c] - int(b[c])
+        out[f"d_{c}"] = out[c] - float(b[c])
 
     out["DecisionImpactScore"] = (
         np.abs(out["d_grad_ge20_h"])
@@ -899,7 +1019,8 @@ def plot_decision_impact(decision_df: pd.DataFrame, out_png: Path, top_n: int = 
         ax.axvline(0.0, color="k", linestyle="--", linewidth=1)
         ax.grid(True, axis="x", alpha=0.3)
 
-    axes[0].set_title("Change In Hours With |Gradient| >= 20 C/m")
+    g1 = float(decision_df.get("gradient_threshold_1_cpm", pd.Series([20.0])).iloc[0])
+    axes[0].set_title(f"Change In Hours With |Gradient| >= {g1:.0f} C/m")
     axes[0].set_xlabel("Hours (scenario - baseline)")
     axes[0].set_yticks(y, d["experiment"].tolist())
     axes[1].set_title("Change In Hours With Surface Temp <= -15 C")
@@ -927,7 +1048,7 @@ def build_implementation_status(
         (
             "1_decision_error_framing",
             ("d_grad_ge20_h" in decision_cols) and ("flip_grad20_h" in decision_cols),
-            "Decision-impact hour deltas/flips produced.",
+            "Decision-impact hour deltas/flips produced (time-weighted).",
         ),
         (
             "2_cloud_lw_pathway",
@@ -1076,7 +1197,7 @@ def build_so_what_summary(
         f"`{_safe_ratio(lw10_g, lat_g):.1f}x` the gradient impact of a 30% latent-flux error (`latent_scale_0p7`)."
     )
     lines.append(
-        f"- Cloud-averaged daytime SW simplification (`sw_daytime_climatology`) changes gradients by `{sw_g:.2f} C/m`, "
+        f"- Cloud-averaged daytime net-SW simplification (`sw_daytime_climatology`) changes gradients by `{sw_g:.2f} C/m`, "
         f"while a 20% wind error (`wind_scale_0p8`) changes gradients by `{wind_g:.2f} C/m`."
     )
     lines.append(
@@ -1122,8 +1243,8 @@ def build_so_what_summary(
     # Core statements aligned with user goals.
     add_stmt(
         "sw_hourly_climatology",
-        "Using Climatological SW Instead Of Measured SW",
-        "removing observed cloud-driven SW variability materially degrades both surface temperature and gradient skill; "
+        "Using Climatological Net SW Instead Of Measured Net SW",
+        "removing observed cloud-driven SW variability in absorbed shortwave materially degrades both surface temperature and gradient skill; "
         "daytime cloud effects should be represented in operational interpretation.",
     )
     add_stmt(
@@ -1133,8 +1254,13 @@ def build_so_what_summary(
     )
     add_stmt(
         "sw_cloud_day_climatology",
-        "Using Climatological SW Only In Cloudy Daytime",
+        "Using Climatological Net SW Only In Cloudy Daytime",
         "even partial SW simplification during cloudy daytime changes gradients, showing cloud-radiation timing matters for snowpack thermal structure.",
+    )
+    add_stmt(
+        "sw_no_up_alpha_0p80",
+        "No SW-Up Sensor Case (Fixed Albedo 0.80)",
+        "assuming fixed albedo when SW-up is unavailable can materially shift absorbed shortwave and therefore surface and gradient interpretation.",
     )
     add_stmt(
         "no_sensible",
@@ -1188,6 +1314,7 @@ def build_so_what_summary(
         "sw_hourly_climatology",
         "sw_daytime_climatology",
         "sw_cloud_day_climatology",
+        "sw_no_up_alpha_0p80",
         "lw_hourly_climatology",
         "lwdown_scale_0p9",
         "lwdown_scale_1p1",
@@ -1304,6 +1431,7 @@ def main() -> int:
         "times_sec",
         "measured_air_temp",
         "SW_in_interp",
+        "compute_shortwave_net",
         "LW_in_interp",
         "RH_arr_interp",
         "get_wind_speed",
@@ -1317,6 +1445,8 @@ def main() -> int:
     t_eval = np.asarray(ns["times_sec"], dtype=float)
     obs_c = np.asarray(ns["usgs_temp_obs_interp"](t_eval), dtype=float)
     timestamps = pd.to_datetime(ns["df"].index[0]) + pd.to_timedelta(t_eval, unit="s")
+    start_ts = pd.to_datetime(ns["df"].index[0])
+    start_offset_sec = int(start_ts.hour * 3600 + start_ts.minute * 60 + start_ts.second)
     h_eval = np.maximum(np.asarray(ns["snow_depth_interp"](t_eval), dtype=float), 0.10)
 
     tair_k = np.asarray(ns["measured_air_temp"](t_eval), dtype=float)
@@ -1346,10 +1476,14 @@ def main() -> int:
     else:
         grad_obs_proxy_cpm = np.full_like(obs_c, np.nan, dtype=float)
 
-    hours = (t_eval % 86400.0) / 3600.0
-    day_mask = (hours >= 6.0) & (hours <= 18.0)
+    local_hour = (
+        pd.DatetimeIndex(timestamps).hour
+        + pd.DatetimeIndex(timestamps).minute / 60.0
+        + pd.DatetimeIndex(timestamps).second / 3600.0
+    )
+    day_mask = sw_down > float(args.night_sw_threshold)
     night_mask = ~day_mask
-    morning_mask = (hours >= 9.0) & (hours <= 11.0)
+    morning_mask = (local_hour >= 9.0) & (local_hour <= 11.0)
 
     eps_atm_obs = lw_down / (float(ns["sigma"]) * (tair_k**4))
     eps_atm_obs = np.clip(eps_atm_obs, 0.0, 1.5)
@@ -1371,8 +1505,9 @@ def main() -> int:
         "high_sw_day": high_sw,
     }
 
-    sw_hourly_curve = make_hourly_curve(t_eval, sw_down)
-    lw_hourly_curve = make_hourly_curve(t_eval, lw_down)
+    lw_hourly_curve = make_hourly_curve(t_eval, lw_down, start_offset_sec=start_offset_sec)
+    sw_net_eval = _eval_scalar_func_on_array(ns["compute_shortwave_net"], t_eval)
+    sw_net_hourly_curve = make_hourly_curve(t_eval, sw_net_eval, start_offset_sec=start_offset_sec)
     cloud_interp = ns["interp1d"](
         t_eval,
         cloud_mask.astype(float),
@@ -1382,7 +1517,7 @@ def main() -> int:
     )
     clear_df = pd.DataFrame(
         {
-            "hour": ((t_eval % 86400.0) / 3600.0).astype(int),
+            "hour": hour_index_from_seconds(t_eval, start_offset_sec),
             "lw": lw_down,
             "cloud": cloud_mask,
         }
@@ -1395,11 +1530,17 @@ def main() -> int:
 
     rows = []
     grad_by_experiment: dict[str, np.ndarray] = {}
+    grad_top20_by_experiment: dict[str, np.ndarray] = {}
     error_df = pd.DataFrame({"timestamp": timestamps, "obs_c": obs_c})
+    dt_sec = np.diff(t_eval)
+    if len(dt_sec) == 0:
+        dt_sec = np.array([3600.0], dtype=float)
+    dt_sec = np.r_[dt_sec, dt_sec[-1]]
+    error_df["dt_hours"] = dt_sec / 3600.0
     experiments = build_experiments()
     for exp in experiments:
         print(f"Running experiment: {exp.name}")
-        row, model_eval_c, err, grad_bulk_cpm = run_experiment(
+        row, model_eval_c, err, grad_pack = run_experiment(
             ns,
             exp,
             use_skin=use_skin,
@@ -1407,18 +1548,24 @@ def main() -> int:
             t_eval=t_eval,
             obs_c=obs_c,
             window_masks=window_masks,
-            sw_hourly_curve=sw_hourly_curve,
+            sw_net_hourly_curve=sw_net_hourly_curve,
             cloud_interp=cloud_interp,
             lw_clear_hourly=lw_clear_hourly,
             lw_hourly_curve=lw_hourly_curve,
+            start_offset_sec=start_offset_sec,
+            night_sw_threshold=float(args.night_sw_threshold),
         )
         rows.append(row)
-        grad_by_experiment[exp.name] = grad_bulk_cpm
+        grad_by_experiment[exp.name] = grad_pack["bulk"]
+        grad_top20_by_experiment[exp.name] = grad_pack["top20"]
         error_df[f"model_{exp.name}_c"] = model_eval_c
         error_df[f"error_{exp.name}_c"] = err
-        error_df[f"bulk_grad_{exp.name}_cpm"] = grad_bulk_cpm
+        error_df[f"bulk_grad_{exp.name}_cpm"] = grad_pack["bulk"]
+        error_df[f"grad_top20_{exp.name}_cpm"] = grad_pack["top20"]
+        error_df[f"grad_top10_{exp.name}_cpm"] = grad_pack["top10"]
+        error_df[f"grad_top60_{exp.name}_cpm"] = grad_pack["top60"]
         if has_soil_obs:
-            error_df[f"grad_proxy_err_{exp.name}_cpm"] = grad_bulk_cpm - grad_obs_proxy_cpm
+            error_df[f"grad_proxy_err_{exp.name}_cpm"] = grad_pack["bulk"] - grad_obs_proxy_cpm
 
     # Add a direct heuristic benchmark as an explicit scenario row:
     # surface temp proxy = air temp.
@@ -1448,9 +1595,13 @@ def main() -> int:
         air_proxy_row[f"Bias_{wname}"] = bias_w
     rows.append(air_proxy_row)
     grad_by_experiment["air_temp_proxy"] = air_proxy_grad_cpm
+    grad_top20_by_experiment["air_temp_proxy"] = air_proxy_grad_cpm
     error_df["model_air_temp_proxy_c"] = air_proxy_c
     error_df["error_air_temp_proxy_c"] = air_proxy_err
     error_df["bulk_grad_air_temp_proxy_cpm"] = air_proxy_grad_cpm
+    error_df["grad_top20_air_temp_proxy_cpm"] = air_proxy_grad_cpm
+    error_df["grad_top10_air_temp_proxy_cpm"] = air_proxy_grad_cpm
+    error_df["grad_top60_air_temp_proxy_cpm"] = air_proxy_grad_cpm
     if has_soil_obs:
         error_df["grad_proxy_err_air_temp_proxy_cpm"] = air_proxy_grad_cpm - grad_obs_proxy_cpm
 
@@ -1481,6 +1632,15 @@ def main() -> int:
             "Mean_abs_dGrad_cpm": float(np.mean(np.abs(dg))),
             "P95_abs_dGrad_cpm": float(np.nanpercentile(np.abs(dg), 95)),
         }
+        if exp_name in grad_top20_by_experiment and "baseline_measured" in grad_top20_by_experiment:
+            dg20 = grad_top20_by_experiment[exp_name] - grad_top20_by_experiment["baseline_measured"]
+            row["GRAD20RMSE_change_all"] = float(np.sqrt(np.mean(dg20**2)))
+            row["GRAD20RMSE_change_cloud"] = (
+                float(np.sqrt(np.mean((dg20[cloud_mask]) ** 2))) if np.any(cloud_mask) else np.nan
+            )
+            row["GRAD20RMSE_change_night"] = (
+                float(np.sqrt(np.mean((dg20[night_mask]) ** 2))) if np.any(night_mask) else np.nan
+            )
         if has_soil_obs:
             ge = g - grad_obs_proxy_cpm
             row["GRADRMSE_vs_obsproxy_all"] = float(np.sqrt(np.nanmean(ge**2)))
@@ -1498,18 +1658,27 @@ def main() -> int:
     df["dGRADRMSE_all"] = df["GRADRMSE_change_all"]
     df["dGRADRMSE_cloud"] = df["GRADRMSE_change_cloud"]
     df["dGRADRMSE_night"] = df["GRADRMSE_change_night"]
+    if "GRAD20RMSE_change_all" in df.columns:
+        df["dGRAD20RMSE_all"] = df["GRAD20RMSE_change_all"]
+
+    grad_score = (
+        np.abs(df["dGRADRMSE_all"])
+        + 0.6 * np.abs(df["dGRADRMSE_cloud"])
+        + 0.6 * np.abs(df["dGRADRMSE_night"])
+    )
+    if {"GRAD20RMSE_change_all", "GRAD20RMSE_change_cloud", "GRAD20RMSE_change_night"}.issubset(df.columns):
+        grad_score = grad_score + 0.8 * (
+            np.abs(df["GRAD20RMSE_change_all"])
+            + 0.6 * np.abs(df["GRAD20RMSE_change_cloud"])
+            + 0.6 * np.abs(df["GRAD20RMSE_change_night"])
+        )
 
     df["ImpactScore"] = (
         np.abs(df["dRMSE_all"])
         + 0.6 * np.abs(df["dRMSE_cloud"])
         + 0.6 * np.abs(df["dRMSE_night"])
         + 0.4 * np.abs(df["dRMSE_morning"])
-        + 0.5
-        * (
-            np.abs(df["dGRADRMSE_all"])
-            + 0.6 * np.abs(df["dGRADRMSE_cloud"])
-            + 0.6 * np.abs(df["dGRADRMSE_night"])
-        )
+        + 0.5 * grad_score
     )
     df = df.sort_values(["ImpactScore", "RMSE"], ascending=[False, True]).reset_index(drop=True)
 
@@ -1547,7 +1716,12 @@ def main() -> int:
         "low_wind_n": int(window_masks["low_wind"].sum()),
         "high_sw_day_n": int(window_masks["high_sw_day"].sum()),
         "cloud_eps_threshold": float(args.cloud_eps_threshold),
+        "night_sw_threshold": float(args.night_sw_threshold),
         "has_soil_obs": int(has_soil_obs),
+        "all_h": float(np.sum(error_df["dt_hours"])),
+        "day_h": float(np.sum(error_df["dt_hours"] * window_masks["day"].astype(float))),
+        "night_h": float(np.sum(error_df["dt_hours"] * window_masks["night"].astype(float))),
+        "cloud_h": float(np.sum(error_df["dt_hours"] * window_masks["cloud"].astype(float))),
     }
     pd.DataFrame([counts]).to_csv(
         outdir / f"variable_importance_window_counts_{args.station}_{args.start}_{args.end}.csv",
@@ -1775,9 +1949,10 @@ def main() -> int:
             if sub.empty:
                 continue
             r = sub.iloc[0]
+            grad_metric = r.get("gradient_metric", "bulk_grad")
             lines.append(
-                f"- `{exp}`: d|grad|>=20h `{int(r['d_grad_ge20_h']):+d}`, dT<=-15h `{int(r['d_surf_le15_h']):+d}`, "
-                f"grad20 flips `{int(r['flip_grad20_h'])}`h, cold15 flips `{int(r['flip_cold15_h'])}`h."
+                f"- `{exp}` ({grad_metric}): d|grad|>=thr1h `{float(r['d_grad_ge20_h']):+.1f}`, dT<=-15h `{float(r['d_surf_le15_h']):+.1f}`, "
+                f"grad flips `{float(r['flip_grad20_h']):.1f}`h, cold15 flips `{float(r['flip_cold15_h']):.1f}`h."
             )
     lines.append("")
     lines.append("## Presentation Use")
