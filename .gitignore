@@ -15,3 +15,17 @@ __pycache__/
 # IDE
 .idea/
 .vscode/
+
+# Local runtime/cache
+.mplconfig/
+.cache/
+data/usgs_cache/
+
+# Generated experiment outputs
+results/**/*.csv
+results/**/*.png
+results/**/*.json
+results/**/*.parquet
+
+# Notebook checkpoints/snapshots
+notebooks/snowmodel_USGS_checkpoint_*.ipynb

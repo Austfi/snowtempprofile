@@ -1,389 +1,441 @@
 # AGENTS.md
 
-This file is a **project playbook** for anyone (human or AI agent) working on the
-`snowtempprofile` notebook/codebase. It defines the **ISSW goal**, the **minimum viable scope**,
-the **data source**, the **model/validation conventions**, and the **highest‑leverage coding tasks**
-to make the ISSW abstract and proceedings paper credible and finishable.
+This file is the long-term project playbook for `snowtempprofile-1`.
+It is written for both humans and AI agents.
+
+Purpose:
+- Keep the project scoped and finishable for ISSW 2026.
+- Keep code beginner-friendly and scientifically defensible.
+- Keep results useful for both researchers and avalanche practitioners.
 
 ---
 
-## 0) Project snapshot
+## 0) Project Snapshot
 
-**Project name:** Minimal 1‑D multilayer snow temperature model (surface energy balance + conduction)
+Project:
+- Minimal 1-D multilayer snow temperature model (surface energy balance + conduction).
 
-**Primary ISSW research question (A‑pathway):**  
-> How well can a minimal surface energy balance model reproduce observed **snow surface temperature**,
-> and which flux parameterizations (especially incoming longwave) drive the error?
+Core question:
+- How well can a minimal SEB snow model reproduce observed snow surface temperature?
+- Which forcing assumptions (especially LW and cloud/radiation handling) drive error and decision-relevant interpretation changes?
 
-**Core deliverable for ISSW:**  
-A reproducible pipeline that pulls real station forcing, runs a controlled scenario suite, and reports
-surface temperature skill + error attribution in regimes relevant to avalanche practice.
-
----
-
-## 1) ISSW 2026 context (what we are building toward)
-
-This project is targeting **ISSW 2026** (Whistler, BC).
-
-### Abstract rules (must meet)
-From the ISSW 2026 abstract guidelines page:
-- Language: English  
-- Title: max **140 characters**  
-- Abstract text: max **350 words**  
-- Choose presentation type: oral / poster / either  
-- No submission fees  
-- Abstracts reviewed anonymously; scoring emphasizes:
-  1) Quality  
-  2) Merging theory and practice  
-  3) Relevance  
-  4) Innovation and contribution  
-- Abstracts are only rejected for being off-topic, inflammatory, purely promotional, or duplicative.
-
-### Deadlines (hard constraints)
-From ISSW 2026 "Submit an Abstract" + "Important Dates":
-- Abstract deadline: **May 1, 2026**
-- Presenting authors register by: **July 15, 2026**
-- Proceedings paper deadline: **August 24, 2026** (2–8 pages)
-
-### Proceedings paper formats + accessibility
-ISSW offers **two paper formats** (technical vs practical), with Word and LaTeX templates.
-The MSU Library archive requires **WCAG 2.1 Level AA accessibility**, and the ISSW 2026 templates
-have been updated accordingly.
-
-**Agent rule:** Do not invent formatting rules. Use the official ISSW 2026 templates.
+Main deliverable:
+- Reproducible pipeline that:
+  1) pulls station data,
+  2) runs controlled scenarios,
+  3) reports both standard skill metrics and practitioner-facing impact metrics.
 
 ---
 
-## 2) Scope: what is in / out (do not let scope creep kill the abstract)
+## 1) ISSW 2026 Target
 
-### In-scope (minimum viable science)
-- 1‑D multilayer conduction model with a surface energy balance boundary condition
-- Run model using **USGS station forcing**
-- Validate primarily against **measured non-contact snow surface temperature**
-- Controlled scenario suite to attribute error:
-  - measured vs parameterized **LW↓**
-  - measured vs simplified **SW/albedo**
-  - optional: neutral vs simple stability correction for turbulent fluxes
-- Run across multiple **7–14 day case windows** (and ideally 2 sites)
+Target event:
+- ISSW 2026, Whistler, BC.
 
-### Out-of-scope (explicitly)
-- Full SNOWPACK physics: evolving layering, densification/settlement, water percolation/refreezing,
-  grain type evolution, preferential flow, etc.
-- Blowing snow transport/sublimation physics (we may *filter* drifting-snow periods instead)
-- Claiming validated near-surface gradients without in-snow thermistor observations
+Working deadlines (verify on official site before submission):
+- Abstract deadline: May 1, 2026
+- Presenting author registration: July 15, 2026
+- Proceedings paper deadline: August 24, 2026
 
-**Principle:** Expand the *evaluation* (more windows/sites), not the physics.
+Review priorities to satisfy:
+- Quality
+- Theory-practice integration
+- Relevance
+- Innovation/contribution
+
+Agent rule:
+- Do not invent formatting requirements.
+- Use official ISSW templates and guidance when finalizing abstract/paper.
 
 ---
 
-## 3) Data: USGS forcing and observations (single source of truth)
+## 2) Scope Control
 
-### Station IDs (initial targets)
-- **Senator Beck Meteorological Station**: `USGS 375429107433201`
-- **Ptarmigan Meteorological Station**: `USGS 392954106162501`
+### In Scope (minimum viable science)
+- 1-D conduction + SEB top boundary.
+- Forcing from USGS station data.
+- Primary validation against non-contact snow surface temperature (`72405`).
+- Controlled forcing/scenario perturbations for attribution.
+- Multi-window/site evaluation (expand evaluation before expanding physics).
 
-These NWIS pages list all key parameters and show they are "provisional data subject to revision."
+### Out of Scope (for abstract phase)
+- Full SNOWPACK-style physics (settlement, percolation/refreezing, grain evolution, preferential flow).
+- Strong claims about weak-layer prediction without in-snow thermistor validation.
+- Large architecture rewrites that slow iteration.
 
-### USGS Data Collector
-Use the standalone collector: `notebooks/usgs_collector.py`
+Principle:
+- Expand evaluation breadth (windows/sites/scenarios), not model complexity.
 
-```python
-from usgs_collector import fetch_usgs_iv, simplify_columns, STATIONS
+---
 
-df = simplify_columns(fetch_usgs_iv(STATIONS["senator_beck"], "2025-01-01", "2025-01-10"))
+## 3) Data Source of Truth
+
+Primary source:
+- USGS Water Services IV endpoint.
+
+Primary station IDs currently used:
+- `senator_beck`: `375429107433201`
+- `independence_pass`: `390622106343001`
+- `berthoud_pass`: `394759105464101`
+- `ptarmigan` (legacy support if needed): `392954106162501`
+
+Current collector module:
+- `notebooks/usgs_collector.py`
+
+Cache policy:
+- Prefer cached fetches to reduce API fragility and speed experiments.
+- Cache path: `data/usgs_cache/`
+
+Example cache command:
+```bash
+python scripts/cache_usgs_dataset.py --station senator_beck --start 2026-01-01 --end 2026-01-31
 ```
 
-### Verified parameter codes (from USGS API header 2026-02-05)
-These are the parameter codes confirmed available at Senator Beck and Ptarmigan:
+---
 
-#### Atmospheric Forcing
-| Code | DataFrame Column | Description | Units |
-|------|------------------|-------------|-------|
-| `00020` | `air_temp_c` | Air temperature | °C |
-| `00052` | `rh_pct` | Relative humidity | % |
-| `00035` | `wind_speed_mph` | Wind speed | mph |
-| `00036` | `wind_dir_deg` | Wind direction (from true north) | degrees |
-| `00025` | `pressure_mmhg` | Barometric pressure | mmHg |
-| `61728` | `wind_gust_mph` | Wind gust speed | mph |
+## 4) Required Variables and Units
 
-#### Radiation 
-| Code | DataFrame Column | Description | Units |
-|------|------------------|-------------|-------|
-| `72186` | `sw_down_wm2` | Shortwave radiation, downward (incoming) | W/m² |
-| `72185` | `sw_up_wm2` | Shortwave radiation, upward (reflected) | W/m² |
-| `72175` | `lw_down_wm2` | Longwave radiation, downward (incoming) | W/m² |
-| `72174` | `lw_up_wm2` | Longwave radiation, upward (emitted) | W/m² |
+Use consistent names from `simplify_columns()`:
 
-#### Snow Properties
-| Code | DataFrame Column | Description | Units |
-|------|------------------|-------------|-------|
-| `72189` | `snow_depth_m` | Snow depth | meters |
-| `72405` | `surface_temp_c` | Surface temperature (non-contact) **PRIMARY VALIDATION** | °C |
-| `72393` | `lwc_pct` | Liquid water content | % volume |
-| `72394` | `drifting_snow` | Drifting snow mass flux | g/m²/s |
+Atmospheric:
+- `air_temp_c` (`00020`)
+- `rh_pct` (`00052`)
+- `wind_speed_mph` (`00035`)
+- `wind_dir_deg` (`00036`)
+- `pressure_mmhg` (`00025`)
+- `wind_gust_mph` (`61728`, optional)
 
-#### Soil (Bottom Boundary)
-| Code | DataFrame Column | Description | Units |
-|------|------------------|-------------|-------|
-| `72253` | `soil_temp_c` | Soil temperature (5 cm depth) | °C |
-| `72253` | `soil_temp_c_2` | Soil temperature (20 cm depth) | °C |
+Radiation:
+- `sw_down_wm2` (`72186`)
+- `sw_up_wm2` (`72185`)
+- `lw_down_wm2` (`72175`)
+- `lw_up_wm2` (`72174`)
 
-### How to retrieve data (simple, reproducible)
-Use USGS Water Services **Instantaneous Values (iv)** endpoint. It supports tab-delimited "RDB"
-format (easy to parse in pandas).
+Snow/soil:
+- `snow_depth_m` (`72189`)
+- `surface_temp_c` (`72405`) PRIMARY validation
+- `soil_temp_c`, `soil_temp_c_2` (`72253` depths)
+- `lwc_pct` (`72393`, optional)
+- `drifting_snow` (`72394`, optional)
 
-Recommended: request only the parameter codes needed for the current experiment window.
-Avoid scraping NWIS webpages.
-
-**Note on modernization:** Some NWIS pages are undergoing modernization with expected
-decommissioning; prefer API retrieval and keep an eye on migration guidance.
+Unit rules:
+- Keep dataframe temperature in C; convert to K inside physics.
+- Wind mph -> m/s with `0.44704`.
+- Pressure mmHg -> Pa with `133.322`.
+- Radiation remains W/m2.
 
 ---
 
-## 4) Model + validation conventions (avoid silent sign/unit bugs)
+## 5) Physics Conventions (Non-Negotiable)
 
-### Units (must be consistent)
-- Temperature: °C in DataFrame; convert to K inside physics
-- Wind: mph → m/s using `0.44704`
-- Pressure: mm Hg → Pa using `133.322`
-- Radiation: W/m² (as provided)
+Surface flux sign convention:
+- Positive flux means downward into snow.
 
-### Surface temperature observation hierarchy
-1) Primary: `72405` (non-contact snow surface temperature)  
-2) Secondary: derive Ts from `LW↑` using Stefan–Boltzmann (diagnostic only)
+Surface terms:
+- `LWnet = LWdown - LWup`
+- `SWnet = SWdown - SWup` (or albedo form when scenario requires)
+- `Qsen` positive when air warms surface.
+- `Qlat` positive when moisture flux warms surface.
 
-### Flux sign convention (standardize everywhere)
-Define **positive flux as downward into snow** at the surface.
-- `LWnet = LW↓ − LW↑`
-- `SWnet = SW↓ − SW↑` (or `SW↓*(1−α)` if α constant)
-- `Qs` positive downward when air warms surface
-- `Ql` positive downward when condensation/deposition warms surface (sign from q_air − q_snow)
+Layer indexing:
+- `T[0]` = bottom (ground-adjacent)
+- `T[-1]` = top (surface-adjacent)
 
-### Layer indexing (recommended)
-For readability:
-- `T[0]` = top (surface-adjacent layer)
-- `T[-1]` = bottom (ground-adjacent layer)
+Boundary conditions:
+- Top: SEB closure.
+- Bottom: fixed or measured soil-temp option; document which is used in each run.
 
-### Snow depth H(t)
-Target requirement: **H adjusts with the sensor**.
-
-Keep it undergraduate-simple:
-- Fix the number of layers `N`
-- Use `H(t)` from `72189` (snow depth)
-- Layer thickness is `dz(t) = H(t)/N`
-
-**Minimal viable way to implement H(t) without heavy math**
-Instead of a continuously deforming grid inside one long ODE solve:
-1) Define a regular time grid using station timestamps (e.g., hourly).
-2) Integrate the ODE one interval at a time with constant `H` over that interval.
-3) If `H` changes between intervals, remap the temperature profile from old depths to new depths using
-   simple 1‑D interpolation on depth coordinates.
-
-This keeps the physics "good enough" and prevents hidden instability.
-
-**Important limitation:** This approach ignores explicit advection from snowfall/settlement. We will
-either (a) choose windows with relatively small dH/dt for the abstract, or (b) quantify dH/dt and
-discuss it as a limitation.
+Snow depth handling:
+- Preferred path: `H(t)` from sensor with fixed `N` layers and `dz(t)=H(t)/N`.
+- Minimal robust method: piecewise integration + profile remapping between intervals.
 
 ---
 
-## 5) Scenario suite (the core of "what drives error?")
+## 6) Data QC Rules
 
-Run the same suite for every case window.
+Mandatory QC before any solve:
+- Remove duplicates and sort time.
+- Ensure time monotonicity.
+- Clip radiation lower bound: `SWdown >= 0`, `SWup >= 0`.
+- Handle missing required columns with explicit error.
+- Interpolate only after QC and with documented method.
 
-### Scenario toggles
-- **LW↓ option**
-  - measured: use measured LW↓ parameter (code TBD)
-  - parameterized: compute LW↓ from Tair/RH (simple emissivity model)
-- **SW/albedo option**
-  - measured: use measured SW↓−SW↑ (codes TBD)
-  - simplified: constant albedo α (e.g., 0.80), `SW↓*(1−α)`
-
-### Minimum scenario set (4 runs)
-1) Measured LW↓, measured SW↑  
-2) Parameterized LW↓, measured SW↑  
-3) Measured LW↓, constant α  
-4) Parameterized LW↓, constant α
-
-**Agent rule:** Any diagnostic flux plots must use the **same** scenario settings as the solve.
-No "measured LW diagnostics" for an "idealized LW run".
+Recommended QC diagnostics to print each run:
+- Rows before/after QC.
+- Min SWdown/SWup after QC.
+- Time coverage start/end and expected model duration.
 
 ---
 
-## 6) Evaluation outputs (Definition of Done for the abstract)
+## 7) Scenario Framework
 
-For each site + case window:
-- Plot: Tsfc_obs vs Tsfc_model for all scenarios
-- Table: MAE, RMSE, Bias, Correlation for each scenario
-- Optional: split metrics by day/night and/or clear/cloudy proxy
-  - Example clear/cloudy proxy: observed effective atmospheric emissivity
-    `eps_atm_obs = LW↓ / (σ * Tair^4)` (diagnostic only)
+### Baseline
+- `baseline_measured`: measured SW + measured LW with current tuned baseline params.
 
-Across multiple windows:
-- One summary table across windows (mean/median performance per scenario)
-- One summary plot highlighting which simplification hurts most (ΔMAE from baseline)
+### Core attribution scenarios
+- `sw_hourly_climatology`: average SW, no cloud-event variability.
+- `sw_daytime_climatology`
+- `sw_cloud_day_climatology`
+- `lw_hourly_climatology`: average LW, no cloud-event variability.
+- `lwdown_parameterized`
+- `lwdown_cloud_to_clear`
+- `lwdown_scale_0p9`, `lwdown_scale_1p1`
 
-**Minimum number of case windows:** 4–8 total is enough for a strong abstract if chosen well.
+### Turbulence / wind scenarios
+- `sensible_scale_0p7`, `sensible_scale_1p3`
+- `latent_scale_0p7`, `latent_scale_1p3`
+- `no_sensible`, `no_latent`, `no_turbulent`
+- `wind_scale_0p8`, `wind_scale_1p2`
+- Extreme teaching set: `wind_scale_0p75`, `wind_scale_0p5`, `wind_scale_0p25`, `wind_scale_0p0`
 
----
+### Air-temperature influence scenarios
+- `airtemp_scale_0p75`, `airtemp_scale_0p5`, `airtemp_scale_0p25`, `airtemp_scale_0p0`
 
-## 7) Case-window selection rules (keep physics honest)
+### Heuristic benchmark
+- `air_temp_proxy`: surface temp = air temp (explicit benchmark row).
 
-We can filter windows to match model assumptions.
-Suggested simple filters (tunable):
-- Snow depth: `Hs > 0.20 m` for the full window
-- Dry-snow focus (optional): `LWC < 0.5%` (if using LWC)  
-- Avoid strong drifting-snow events (optional): drifting snow flux below threshold
+### Snow-depth sensitivity
+- `snowdepth_scale_0p9`, `snowdepth_scale_1p1`
 
-If a window violates assumptions (wet snow, major drifting, melt-out), either:
-- exclude it from the abstract analysis, or
-- include it explicitly as an "out of scope / failure mode" example (only if time allows)
-
----
-
-## 8) Coding standards (keep it simple and readable)
-
-This repo is an undergraduate-friendly scientific codebase.
-
-**Do**
-- Use small pure functions
-- Use plain dictionaries for config/scenarios
-- Keep variable names explicit (`LWdown_Wm2`, `Tsfc_obs_C`)
-- Write short docstrings that describe inputs/outputs
-- Centralize unit conversions in one place
-- Make every figure reproducible from raw inputs
-
-**Avoid**
-- Complex class hierarchies
-- Global mutable flags (prefer passing a `scenario` dict into functions)
-- "Notebook-only" hidden state that changes results based on execution order
-- Overfitting the model to one window/site (ISSW wants generality)
+Agent rule:
+- Keep diagnostic calculations consistent with the active scenario forcing.
 
 ---
 
-## 9) Priority task list (high leverage first)
+## 8) Metrics to Report
 
-### P0 — Must fix before writing an ISSW abstract
-1) ✅ **USGS data loader**: `notebooks/usgs_collector.py` — fetch iv data + clean units + consistent column naming
-2) ✅ **Verify radiation parameter codes**: Confirmed SW↓/SW↑ (72186/72185) and LW↓/LW↑ (72175/72174)
-3) **Scenario consistency**: solver + diagnostics use identical LW/SW assumptions
-4) **H(t) implementation**: piecewise integration with profile remapping
-5) **Primary validation**: use non-contact Tsfc (72405) as main observation
-6) **Reproducible outputs**: one command/notebook cell produces plots + metrics table for a window
+### Standard scientific metrics
+- MAE, RMSE, Bias, Correlation (surface temp)
+- Optional splits: day/night/cloud/clear/morning.
 
-### P1 — Strongly recommended for a credible story
-7) Use measured soil temperature as bottom boundary *if it simplifies and improves realism*
-8) Simple stability correction for turbulent fluxes (or explicitly state "neutral" and remove stability)
-9) Automated case-window loop: run N windows and write results to CSV
+### Practitioner-facing decision metrics (required)
+Relative to baseline, report scenario deltas in hours for:
+- `|bulk gradient| >= 20 C/m`
+- `|bulk gradient| >= 30 C/m`
+- `surface temp <= -15 C`
+- `surface temp <= -20 C`
 
-### P2 — Nice-to-have (only if time remains)
-10) Two-band SW penetration (keep, but only if it demonstrably changes results)
-11) Clear/cloudy regime classification and regime-specific error attribution plots
+Also report:
+- category flip hours (extra vs missed) for gradient and cold-surface thresholds.
+
+Interpretation rule:
+- For presentations, start with hour-based impacts first.
+- Use RMSE/MAE as supporting technical validation.
 
 ---
 
-## 10) Repository hygiene (so the work survives beyond the notebook)
+## 9) Required Outputs
 
-Current structure:
+From `scripts/issw_variable_importance.py`, keep producing:
+- `variable_importance_*.csv`
+- `variable_importance_timeseries_*.csv`
+- `variable_importance_plot_*.png`
+- `variable_importance_surface_gradient_scatter_*.png`
+- `variable_importance_regime_heatmap_*.png`
+- `variable_importance_weather_windows_*.csv`
+- `variable_importance_event_composite_*.csv`
+- `mental_model_benchmark_*.csv`
+- `mental_model_compare_*.png`
+- `so_what_summary_*.md`
+
+Decision-focused outputs:
+- `decision_impact_hours_*.csv`
+- `decision_impact_plot_*.png`
+- `decision_impact_summary_*.md`
+
+Scenario/communication helpers:
+- `scenario_pack_memorable.md`
+- `presentation_storyboard.md`
+
+---
+
+## 10) Recommended Visual Story Order
+
+Use this order for mixed audiences:
+1. Baseline credibility (observed vs modeled surface temp).
+2. Error windows by weather type (clear/calm vs cloudy/windy).
+3. Decision-impact hours plot (category changes in hours).
+4. Scenario comparison table (memorable tests).
+5. Technical sensitivity figures (for research audience).
+6. Plain-language takeaways and limits.
+
+---
+
+## 11) Coding Standards
+
+Do:
+- Small pure functions.
+- Clear variable names.
+- Explicit unit conversions.
+- Reproducible outputs from scripts.
+- Incremental edits and checkpoints.
+
+Avoid:
+- Hidden notebook state dependencies.
+- Global behavior toggles without logging.
+- Overfitting one station/window.
+- Large refactors during abstract phase.
+
+Beginner-first rule:
+- Prefer simple readable code over clever code.
+
+---
+
+## 12) Git and Workflow Rules
+
+- Commit in small, reversible steps.
+- Do not bundle unrelated changes.
+- Keep one frozen baseline config for comparison.
+- Recompute all deltas against the same baseline.
+- Document any parameter change with reason and expected effect.
+
+Suggested commit rhythm:
+1) scenario logic
+2) metrics
+3) visuals
+4) summary text
+
+---
+
+## 13) Runbook (Primary Commands)
+
+Cache data:
+```bash
+python scripts/cache_usgs_dataset.py --station senator_beck --start 2026-01-01 --end 2026-01-31
 ```
-snowtempprofile/
-├── notebooks/
-│   ├── usgs_collector.py      # USGS data fetching (standalone module)
-│   ├── 02_snowmodel_realdata.ipynb
-│   └── 03_data_collection.ipynb
-├── data/
-│   ├── basin_collect.txt
-│   ├── beck_collect.txt
-│   └── boss_collect.txt
-├── figures/
-└── AGENTS.md                   # This file
+
+Run variable-importance suite:
+```bash
+python scripts/issw_variable_importance.py --station senator_beck --start 2026-01-01 --end 2026-01-31 --event-window-hours 6 --event-top-k 5
 ```
 
-Suggested additions:
-- `src/` — core physics functions (solver, metrics) when they stabilize
-- `results/` — CSV tables for metrics
-- Keep notebooks lightweight by importing from standalone modules
-
-**Agent rule:** If you add a new function used in the paper pipeline, consider putting it in a
-standalone `.py` file and importing it into the notebook.
+Optional outlier analysis:
+```bash
+python scripts/analyze_outlier_events.py --station senator_beck --start 2026-01-01 --end 2026-01-31 --threshold-c 4.0
+```
 
 ---
 
-## 11) Quick abstract outline (for later; do not write until P0 tasks are done)
+## 14) ISSW Writing Guidance
 
-A strong ISSW abstract usually reads like:
-1) Problem: why Tsfc accuracy matters (practice + science)
-2) Method: minimal model + USGS forcing + scenario tests + multi-window evaluation
-3) Results: quantitative skill + which simplification hurts most (numbers)
-4) Takeaway: what practitioners should measure/assume (LW↓ importance) + limitations
+Abstract strategy:
+- Keep one clear claim.
+- Use 2-4 strong numbers only.
+- Include one practical consequence statement in plain language.
+- Include one limitations sentence.
+
+Safe framing:
+- "Field cues are necessary but not sufficient."
+- "Radiation-aware tools reduce interpretation error."
+
+Avoid:
+- Claiming education is "wrong".
+- Over-generalizing beyond tested sites/windows.
 
 ---
 
-## 12) Links (official references)
+## 15) GPT Pro Extended Thinking Review Prompt (Reusable)
 
-### ISSW 2026
-- Submit an Abstract: https://www.issw2026.com/submit-an-abstract
-- Guidelines for Papers + templates: https://www.issw2026.com/guidelines-for-papers
-- Important Dates: https://www.issw2026.com/importantdates
+```text
+You are a senior reviewer for a snow energy-balance modeling project. Your job is to audit, improve, and simplify the workflow for both researchers and avalanche practitioners.
 
-### USGS station pages (parameter availability, quick plots)
-- Senator Beck (legacy): https://waterdata.usgs.gov/nwis/uv?legacy=1&site_no=375429107433201
-- Ptarmigan (legacy): https://waterdata.usgs.gov/nwis/uv?legacy=1&site_no=392954106162501
+Context:
+- Repo: snowtempprofile-1
+- Key files:
+  - AGENTS.md
+  - notebooks/snowmodel_USGS.ipynb
+  - scripts/issw_variable_importance.py
+  - results/issw_playground/*
+- Current focus window: Senator Beck station, 2026-01-01 to 2026-01-31.
+- Goal: use a low-error baseline model as a "playground" to test forcing assumptions and show practical "so what" impacts for avalanche interpretation.
+- Audience: mixed (ISSW researchers + field practitioners + beginner Python users).
+- Constraints:
+  - Keep changes low-risk and incremental.
+  - No large refactors.
+  - Beginner-readable code and explanations.
+  - Prioritize practical impact and interpretability over complexity.
 
-### USGS Water Services docs
-- Instantaneous Values (iv): https://waterservices.usgs.gov/docs/instantaneous-values/instantaneous-values-details/
-- Migration to modernized APIs: https://api.waterdata.usgs.gov/docs/ogcapi/migration/
+What I want from you:
+1) Full technical + science review
+- Check physics assumptions (SEB sign conventions, SW/LW handling, turbulent terms, boundary conditions, unit conversions, interpolation/timing assumptions, solver behavior).
+- Identify likely error sources and rank by impact.
+- Flag anything scientifically weak, inconsistent, or overfit.
 
-## 13) Physics & Math Reference (Undergraduate Level)
+2) Scenario framework review
+- Evaluate whether scenario set is educational and defensible.
+- Specifically assess these scenarios:
+  - avg SW with no cloud-event variability
+  - avg LW with no cloud-event variability
+  - reduce air-temp influence from 0-100%
+  - reduce wind influence from 0-100%
+  - air-temp-only surface proxy
+- Recommend additional high-value scenarios if they improve memorability and practitioner relevance.
 
-This section details the physical equations and numerical methods used in the model, intended for educational reference.
+3) Metrics + outputs review
+- Evaluate current metrics (RMSE/MAE/Bias/Correlation + decision-impact hours).
+- Propose improvements for so-what communication.
+- Prioritize category-based metrics (example: hours in strong-gradient range, hours in very-cold-surface range, flips vs baseline).
 
-### 13.1 The 1-D Heat Equation
-The core of the model is the **Fourier Heat Equation**, which describes how heat diffuses through the snowpack. We assume a 1-D vertical profile (valid for uniform snow cover, per *Sturm et al., 1995*):
+4) Visualization/storytelling review
+- Design a clear figure set for ISSW + practitioner audience.
+- Include one recommended slide sequence with figure purpose and caption text.
+- Make sure visuals tell a clear decision story, not just model diagnostics.
 
-84319 \rho c_p \frac{\partial T}{\partial t} = \frac{\partial}{\partial z} \left( k \frac{\partial T}{\partial z} \right) 84319
+5) Deliverable quality check for abstract/paper
+- Check fit with ISSW 2026 expectations (quality, relevance, theory-practice bridge).
+- Suggest exact wording improvements that avoid sounding accusatory to avalanche education systems.
+- Keep claims defensible and scoped to tested windows/sites.
 
-Where:
-*   $\rho$: Snow density (/m^3$)
-*   $: Specific heat capacity of ice (/kg \cdot K$)
-*   $: Temperature ($)
-*   $: Time ($)
-*   $: Depth ($)
-*   $: Thermal conductivity (/m \cdot K$) - often parameterized by density.
+Output format (strict):
+A) Executive Summary (max 10 bullets)
+B) Critical Findings (ordered by severity; include file/line references when possible)
+C) Top 5 Low-Risk Improvements (each with why, expected impact, risk)
+D) Patch Plan (small incremental edits only; commit-sized chunks)
+E) Copy/Paste Code Snippets (minimal, beginner-friendly)
+F) Revised Figure/Story Plan
+G) Abstract Language Revision (practitioner-friendly, clear so-what)
+H) Validation Checklist (what to rerun after each change)
 
-### 13.2 Surface Energy Balance (SEB)
-The top boundary condition is controlled by the net energy flux at the surface. If the surface temperature  < 0^\circ C$, the net flux changes the temperature. If  = 0^\circ C$ and net flux is positive, it causes melt.
+Rules:
+- If you make factual claims about avalanche education or LW importance, provide source links and state confidence.
+- Prefer primary sources for technical/scientific claims.
+- Do not recommend overengineering.
+- Explicitly separate must-do-now vs nice-later.
+- If uncertain, say what you infer and why.
+```
 
-84319 R_{net} + H + LE + G + Q_P = Q_M 84319
+Prompt use notes:
+- Replace station and date window before running.
+- Ask for both practitioner-facing and technical conclusion versions.
+- Keep one baseline configuration fixed while comparing scenarios.
 
-Where:
-*   {net}$: Net Radiation ({net} + LW_{net}$)
-*   $: Sensible Heat Flux (turbulent transfer via wind/temp gradient)
-*   $: Latent Heat Flux (evaporation/sublimation)
-*   $: Ground Heat Flux (conduction into snow)
-*   $: Heat from precipitation (neglected here)
-*   $: Energy available for melt
+---
 
-#### Shortwave Radiation (Solar)
-84319 SW_{net} = SW_{\downarrow} (1 - \alpha) 84319
-*   $\alpha$ (Albedo): Reflectivity of snow processes. New snow $\approx 0.85$, old snow $\approx 0.6$. The model currently uses a simplified fixed or decaying albedo ( et al., 2014$).
+## 16) Official Links
 
-#### Longwave Radiation (Thermal)
-84319 LW_{net} = \epsilon_{atm} \sigma T_{air}^4 - \epsilon_{snow} \sigma T_{surf}^4 84319
-*   $\epsilon_{atm}$: Atmospheric emissivity. Parameterized using *Brutsaert (1975)* based on vapor pressure and air temperature.
-*   $\epsilon_{snow}$: Snow emissivity ($\approx 0.97 - 0.99$).
-*   $\sigma$: Stefan-Boltzmann constant (.67 \times 10^{-8} W/m^2 K^4$).
+ISSW 2026:
+- https://www.issw2026.com/submit-an-abstract
+- https://www.issw2026.com/guidelines-for-papers
+- https://www.issw2026.com/importantdates
 
-#### Turbulent Fluxes (H & LE)
-We use the **Bulk Aerodynamic Method**, suitable for simplified models with limited data (*Arck & Scherer, 2002*):
-84319 H = \rho_{air} c_{p,air} C_H U (T_{air} - T_{surf}) 84319
-84319 LE = \rho_{air} L_{v} C_E U (q_{air} - q_{surf}) 84319
-*   , C_E$: Bulk transfer coefficients (dimensionless, approx /bin/zsh.002$).
-*   $: Wind speed (/s$).
-*   $: Specific humidity (/kg$).
+USGS docs:
+- https://waterservices.usgs.gov/docs/instantaneous-values/instantaneous-values-details/
+- https://api.waterdata.usgs.gov/docs/ogcapi/migration/
 
-### 13.3 Numerical Method
-The model uses the **Method of Lines (MOL)**.
-1.  **Discretization:** The spatial domain (snow depth) is sliced into $ layers (Finite Difference Method).
-2.  **ODE System:** The PDE becomes a system of $ Ordinary Differential Equations (ODEs), one for each layer's temperature.
-3.  **Time Stepping:** We use  to solve this system over time, which handles stability and adaptive time-stepping better than a simple Euler method.
+Avalanche education context:
+- https://avtraining.org/
+- https://avalanche.ca/pages/avaluator
+- https://avalanche.org/
+
+---
+
+## 17) Definition of Done (Abstract Phase)
+
+Minimum done criteria:
+1. Reproducible baseline + scenario suite for at least one full month window.
+2. Decision-impact hour metrics generated and explained.
+3. Clear/calm vs cloudy/windy regime story demonstrated.
+4. Practitioner-readable abstract draft with defensible quantitative support.
+5. At least one transfer check window or second station run completed.
+
+If these are met, move to abstract finalization and paper expansion.
